@@ -82,13 +82,18 @@ namespace PBMapper
             }
 
             // --- ヘッダを統合
+            float totalWidth = EditorGUIUtility.currentViewWidth - 30;
+            float fixedWidth = 36 + 110 + 120; // 適用 + 種類 + score
+            float flexWidth = Mathf.Max(totalWidth - fixedWidth, 300);
+            float halfFlex = flexWidth * 0.5f;
+
             using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
             {
                 GUILayout.Label("適用", GUILayout.Width(36));
-                GUILayout.Label("種類", GUILayout.Width(300));
-                GUILayout.Label("コピー元 (Transform)", GUILayout.Width(260));
-                GUILayout.Label("ターゲット", GUILayout.ExpandWidth(true));
-                GUILayout.Label("score", GUILayout.Width(150));
+                GUILayout.Label("種類", GUILayout.Width(110));
+                GUILayout.Label("コピー元 (Transform)", GUILayout.Width(halfFlex));
+                GUILayout.Label("ターゲット", GUILayout.Width(halfFlex));
+                GUILayout.Label("score", GUILayout.Width(120));
             }
 
             scroll = EditorGUILayout.BeginScrollView(scroll);
@@ -98,9 +103,9 @@ namespace PBMapper
                 {
                     r.apply = EditorGUILayout.Toggle(r.apply, GUILayout.Width(36));
                     GUILayout.Label(string.IsNullOrEmpty(r.kindLabel) ? r.kind.ToString() : r.kindLabel, GUILayout.Width(110));
-                    GUILayout.Label(r.sourceTransform ? r.sourceTransform.GetHierarchyPath() : "(missing)", GUILayout.Width(260));
+                    GUILayout.Label(r.sourceTransform ? r.sourceTransform.GetHierarchyPath() : "(missing)", GUILayout.Width(halfFlex));
 
-                    var rect = GUILayoutUtility.GetRect(200, EditorGUIUtility.singleLineHeight);
+                    var rect = GUILayoutUtility.GetRect(halfFlex, EditorGUIUtility.singleLineHeight);
                     Transform current = r.isMAExternal ? r.maRootTarget : r.suggestedTarget;
                     Transform acceptRoot = targetArmatureRoot ? targetArmatureRoot : targetPrefabRoot?.transform;
 
