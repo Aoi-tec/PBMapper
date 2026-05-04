@@ -199,7 +199,7 @@ namespace PBMapper
             if (!targetPrefabRoot) return;
 
             var colliderMap = new Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider>();
-            var transformMap = BuildTransformNameMap(sourceAll, targetAll);
+            var transformMap = BuildTransformMap(sourceAll, targetAll);
 
             if (enableHighlight) PBMapperHooks.ClearAllHighlights?.Invoke();
 
@@ -243,14 +243,6 @@ namespace PBMapper
                 var dstPb = MapOrAddComponent<VRCPhysBone>(srcPb, dstHolder);
                 EditorUtility.CopySerialized(srcPb, dstPb);
 
-                var so = new SerializedObject(dstPb); so.Update();
-                TryRemapTransformField(so, "rootTransform", srcPb.rootTransform, transformMap);
-                TryRemapTransformArray(so, "ignoreTransforms", srcPb.ignoreTransforms.ToArray(), transformMap);
-                TryRemapColliderArray(so, "colliders",
-                    srcPb.colliders.OfType<VRCPhysBoneCollider>().ToArray(),
-                    colliderMap, transformMap);
-                so.ApplyModifiedPropertiesWithoutUndo();
-
                 RemapAllObjectReferences(new SerializedObject(dstPb), colliderMap, transformMap);
 
                 if (copyOtherComponents)
@@ -269,79 +261,35 @@ namespace PBMapper
 
         // ===== 参照リマップ =====
 
-        public static Dictionary<string, Transform> BuildTransformNameMap(List<Transform> src, List<Transform> dst)
+        public static Dictionary<Transform, Transform> BuildTransformMap(List<Transform> src, List<Transform> dst)
         {
-            var map = new Dictionary<string, Transform>();
+            var map = new Dictionary<Transform, Transform>();
             foreach (var s in src)
             {
-                var key = FuzzyMatcher.NormalizeKey(s.name); if (string.IsNullOrEmpty(key)) continue;
-                if (map.ContainsKey(key)) continue;
+                if (s == null) continue;
+                if (map.ContainsKey(s)) continue;
                 Transform best = null; float bestScore = float.NegativeInfinity;
                 foreach (var t in dst)
                 {
+                    if (t == null) continue;
                     float score = FuzzyMatcher.MatchScore(s.name, t.name);
                     if (score > bestScore) { bestScore = score; best = t; }
                 }
-                if (best) map[key] = best;
+                if (best) map[s] = best;
             }
             return map;
         }
 
-        public static void TryRemapTransformField(SerializedObject so, string propName, Transform src, Dictionary<string, Transform> nameMap)
-        {
-            if (so == null || src == null) return; var prop = so.FindProperty(propName); if (prop == null) return;
-            var key = FuzzyMatcher.NormalizeKey(src.name); if (!string.IsNullOrEmpty(key) && nameMap.TryGetValue(key, out var dst)) prop.objectReferenceValue = dst;
-        }
 
-        public static void TryRemapTransformArray(SerializedObject so, string propName, Transform[] srcArr, Dictionary<string, Transform> nameMap)
-        {
-            if (so == null || srcArr == null) return; var prop = so.FindProperty(propName); if (prop == null) return;
-            prop.arraySize = srcArr.Length;
-            for (int i = 0; i < srcArr.Length; i++)
-            {
-                var src = srcArr[i]; Transform dst = null;
-                if (src)
-                {
-                    var key = FuzzyMatcher.NormalizeKey(src.name);
-                    if (!string.IsNullOrEmpty(key)) nameMap.TryGetValue(key, out dst);
-                }
-                prop.GetArrayElementAtIndex(i).objectReferenceValue = dst;
-            }
-        }
-
-        public static void TryRemapColliderArray(SerializedObject so, string propName, VRCPhysBoneCollider[] srcArr,
-            Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider> cmap,
-            Dictionary<string, Transform> nameMap)
-        {
-            if (so == null || srcArr == null) return; var prop = so.FindProperty(propName); if (prop == null) return;
-            prop.arraySize = srcArr.Length;
-            for (int i = 0; i < srcArr.Length; i++)
-            {
-                var src = srcArr[i]; UnityEngine.Object dst = null;
-                if (src && cmap.TryGetValue(src, out var mapped)) dst = mapped;
-                else if (src && src.transform)
-                {
-                    var key = FuzzyMatcher.NormalizeKey(src.transform.name);
-                    if (!string.IsNullOrEmpty(key) && nameMap.TryGetValue(key, out var tf))
-                    {
-                        var cands = tf.GetComponents<VRCPhysBoneCollider>();
-                        if (cands.Length > 0) dst = cands[0];
-                    }
-                }
-                prop.GetArrayElementAtIndex(i).objectReferenceValue = dst;
-            }
-        }
 
         public static void RemapAllObjectReferences(SerializedObject so,
             Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider> cmap,
-            Dictionary<string, Transform> nameMap)
+            Dictionary<Transform, Transform> transformMap)
         {
             if (so == null) return;
             var it = so.GetIterator();
-            bool enterChildren = true;
-            while (it.NextVisible(enterChildren))
+            while (it.NextVisible(true))
             {
-                enterChildren = false;
                 if (it.propertyType == SerializedPropertyType.ObjectReference)
                 {
                     var obj = it.objectReferenceValue;
@@ -349,14 +297,19 @@ namespace PBMapper
                     {
                         case Transform tr:
                             {
-                                var key = FuzzyMatcher.NormalizeKey(tr.name);
-                                if (!string.IsNullOrEmpty(key) && nameMap.TryGetValue(key, out var dst))
+                                if (tr && transformMap.TryGetValue(tr, out var dst))
                                     it.objectReferenceValue = dst;
                                 break;
                             }
                         case VRCPhysBoneCollider col:
                             {
-                                if (cmap.TryGetValue(col, out var mapped)) it.objectReferenceValue = mapped;
+                                if (col && cmap.TryGetValue(col, out var mapped))
+                                    it.objectReferenceValue = mapped;
+                                else if (col && col.transform && transformMap.TryGetValue(col.transform, out var tf))
+                                {
+                                    var cands = tf.GetComponents<VRCPhysBoneCollider>();
+                                    if (cands.Length > 0) it.objectReferenceValue = cands[0];
+                                }
                                 break;
                             }
                     }
