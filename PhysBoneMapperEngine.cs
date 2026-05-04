@@ -199,7 +199,9 @@ namespace PBMapper
             if (!targetPrefabRoot) return;
 
             var colliderMap = new Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider>();
-            var transformMap = BuildTransformMap(sourceAll, targetAll);
+            var fullSourceAll = TransformUtilities.Collect(sourcePrefabRoot.transform);
+            var fullTargetAll = TransformUtilities.Collect(targetPrefabRoot.transform);
+            var transformMap = BuildTransformMap(fullSourceAll, fullTargetAll);
 
             if (enableHighlight) PBMapperHooks.ClearAllHighlights?.Invoke();
 
@@ -216,6 +218,8 @@ namespace PBMapper
 
                 var dstCol = MapOrAddComponent<VRCPhysBoneCollider>(srcCol, dstHolder);
                 EditorUtility.CopySerialized(srcCol, dstCol);
+
+                transformMap[r.sourceTransform] = dstHolder;
 
                 RemapAllObjectReferences(new SerializedObject(dstCol), colliderMap, transformMap);
 
@@ -243,6 +247,8 @@ namespace PBMapper
                 var dstPb = MapOrAddComponent<VRCPhysBone>(srcPb, dstHolder);
                 EditorUtility.CopySerialized(srcPb, dstPb);
 
+                transformMap[r.sourceTransform] = dstHolder;
+
                 RemapAllObjectReferences(new SerializedObject(dstPb), colliderMap, transformMap);
 
                 if (copyOtherComponents)
@@ -267,6 +273,7 @@ namespace PBMapper
             foreach (var s in src)
             {
                 if (s == null) continue;
+                if (string.IsNullOrEmpty(FuzzyMatcher.NormalizeKey(s.name))) continue;
                 if (map.ContainsKey(s)) continue;
                 Transform best = null; float bestScore = float.NegativeInfinity;
                 foreach (var t in dst)
