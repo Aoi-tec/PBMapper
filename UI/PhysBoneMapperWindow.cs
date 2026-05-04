@@ -121,10 +121,8 @@ namespace PBMapper
                     // D&D 対応
                     if (rect.Contains(Event.current.mousePosition) && Event.current.type == EventType.DragUpdated)
                     {
-                        bool ok = DragAndDrop.objectReferences.All(o => {
-                            Transform tf = o is GameObject go ? go.transform : o as Transform;
-                            return tf != null && TransformUtilities.IsUnderRoot(acceptRoot, tf);
-                        });
+                        bool ok = DragAndDrop.objectReferences.Length > 0 && 
+                                  DragAndDrop.objectReferences.All(o => GetValidTransform(o, acceptRoot) != null);
                         DragAndDrop.visualMode = ok ? DragAndDropVisualMode.Copy : DragAndDropVisualMode.Rejected;
                         Event.current.Use();
                     }
@@ -133,8 +131,8 @@ namespace PBMapper
                         DragAndDrop.AcceptDrag();
                         foreach (var obj in DragAndDrop.objectReferences)
                         {
-                            Transform tf = obj is GameObject go ? go.transform : obj as Transform;
-                            if (tf != null && TransformUtilities.IsUnderRoot(acceptRoot, tf))
+                            Transform tf = GetValidTransform(obj, acceptRoot);
+                            if (tf != null)
                             {
                                 if (r.isMAExternal)
                                     r.maRootTarget = tf;
@@ -151,6 +149,12 @@ namespace PBMapper
                 }
             }
             EditorGUILayout.EndScrollView();
+        }
+
+        private Transform GetValidTransform(UnityEngine.Object obj, Transform acceptRoot)
+        {
+            Transform tf = obj is GameObject go ? go.transform : obj as Transform;
+            return (tf != null && TransformUtilities.IsUnderRoot(acceptRoot, tf)) ? tf : null;
         }
     }
 }
