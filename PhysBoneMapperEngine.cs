@@ -199,11 +199,11 @@ namespace PBMapper
             if (!targetPrefabRoot) return;
 
             var colliderMap = new Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider>();
-            var fullSourceAll = TransformUtilities.Collect(sourcePrefabRoot.transform);
-            var fullTargetAll = TransformUtilities.Collect(targetPrefabRoot.transform);
-            var transformMap = BuildTransformMap(fullSourceAll, fullTargetAll);
+            var transformMap = BuildTransformMap(sourceAll, targetAll);
 
             if (enableHighlight) PBMapperHooks.ClearAllHighlights?.Invoke();
+
+            var remapTargets = new List<SerializedObject>(rows.Count);
 
             // 1) Colliders 先にコピー
             foreach (var r in rows.Where(x => x.apply && x.kind == MappingRow.Kind.Collider && x.suggestedTarget))
@@ -219,11 +219,10 @@ namespace PBMapper
                 var dstCol = MapOrAddComponent<VRCPhysBoneCollider>(srcCol, dstHolder);
                 EditorUtility.CopySerialized(srcCol, dstCol);
 
-                transformMap[r.sourceTransform] = dstHolder;
-
-                RemapAllObjectReferences(new SerializedObject(dstCol), colliderMap, transformMap);
-
+                if (!transformMap.ContainsKey(r.sourceTransform))
+                    transformMap[r.sourceTransform] = dstHolder;
                 colliderMap[srcCol] = dstCol;
+                remapTargets.Add(new SerializedObject(dstCol));
 
                 if (r.isMAExternal && r.maRootTarget)
                     PBMapperHooks.UpdateMABoneProxyRootLocal?.Invoke(dstHolder, r.maRootTarget);
@@ -247,9 +246,9 @@ namespace PBMapper
                 var dstPb = MapOrAddComponent<VRCPhysBone>(srcPb, dstHolder);
                 EditorUtility.CopySerialized(srcPb, dstPb);
 
-                transformMap[r.sourceTransform] = dstHolder;
-
-                RemapAllObjectReferences(new SerializedObject(dstPb), colliderMap, transformMap);
+                if (!transformMap.ContainsKey(r.sourceTransform))
+                    transformMap[r.sourceTransform] = dstHolder;
+                remapTargets.Add(new SerializedObject(dstPb));
 
                 if (copyOtherComponents)
                     CopySiblingComponents(r.sourceTransform, dstHolder);
@@ -260,6 +259,12 @@ namespace PBMapper
                 if (enableHighlight) PBMapperHooks.Highlight?.Invoke(dstHolder.gameObject, true);
                 EditorGUIUtility.PingObject(dstHolder);
                 Undo.RegisterCreatedObjectUndo(dstPb, "Paste VRCPhysBone");
+            }
+
+            // 3) 一括リマップ
+            foreach (var so in remapTargets)
+            {
+                RemapAllObjectReferences(so, colliderMap, transformMap, sourcePrefabRoot.transform);
             }
 
             EditorUtility.DisplayDialog("PhysBone Mapper", "Paste Completed", "OK");
@@ -274,15 +279,26 @@ namespace PBMapper
             {
                 if (s == null) continue;
                 if (string.IsNullOrEmpty(FuzzyMatcher.NormalizeKey(s.name))) continue;
-                if (map.ContainsKey(s)) continue;
                 Transform best = null; float bestScore = float.NegativeInfinity;
                 foreach (var t in dst)
                 {
                     if (t == null) continue;
                     float score = FuzzyMatcher.MatchScore(s.name, t.name);
-                    if (score > bestScore) { bestScore = score; best = t; }
+                    if (score > bestScore) 
+                    { 
+                        bestScore = score; best = t; 
+                    }
+                    else if (score == bestScore && bestScore > 0f)
+                    {
+                        bool curAncestryMatch = (s.parent && t.parent && map.TryGetValue(s.parent, out var mappedParent) && mappedParent == t.parent);
+                        bool bestAncestryMatch = (s.parent && best.parent && map.TryGetValue(s.parent, out var mappedParentBest) && mappedParentBest == best.parent);
+                        if (curAncestryMatch && !bestAncestryMatch)
+                        {
+                            best = t;
+                        }
+                    }
                 }
-                if (best) map[s] = best;
+                if (best && bestScore >= 0.6f) map[s] = best;
             }
             return map;
         }
@@ -291,9 +307,11 @@ namespace PBMapper
 
         public static void RemapAllObjectReferences(SerializedObject so,
             Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider> cmap,
-            Dictionary<Transform, Transform> transformMap)
+            Dictionary<Transform, Transform> transformMap,
+            Transform sourcePrefabRoot)
         {
             if (so == null) return;
+            Debug.Assert(sourcePrefabRoot != null, "[PhysBoneMapper] sourcePrefabRoot is null in RemapAllObjectReferences");
             var it = so.GetIterator();
             while (it.NextVisible(true))
             {
@@ -306,6 +324,8 @@ namespace PBMapper
                             {
                                 if (tr && transformMap.TryGetValue(tr, out var dst))
                                     it.objectReferenceValue = dst;
+                                else if (tr && TransformUtilities.IsUnderRoot(sourcePrefabRoot, tr))
+                                    it.objectReferenceValue = null;
                                 break;
                             }
                         case VRCPhysBoneCollider col:
@@ -322,6 +342,8 @@ namespace PBMapper
                                         it.objectReferenceValue = (index >= 0 && index < dstCands.Length) ? dstCands[index] : dstCands[0];
                                     }
                                 }
+                                else if (col && col.transform && TransformUtilities.IsUnderRoot(sourcePrefabRoot, col.transform))
+                                    it.objectReferenceValue = null;
                                 break;
                             }
                     }
