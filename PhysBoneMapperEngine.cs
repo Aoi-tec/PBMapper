@@ -210,9 +210,9 @@ namespace PBMapper
 
                 Transform dstHolder = (preferMABoneProxyRootForExternal && r.isMAExternal && r.maRootTarget)
                     ? PrepareDestinationHolderWithAnchor(r.sourceTransform, r.maRootTarget, false,
-                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform)
+                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, transformMap)
                     : PrepareDestinationHolder(r.sourceTransform, r.suggestedTarget, false,
-                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, targetPrefabRoot.transform);
+                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, targetPrefabRoot.transform, transformMap);
 
                 var dstCol = MapOrAddComponent<VRCPhysBoneCollider>(srcCol, dstHolder);
                 EditorUtility.CopySerialized(srcCol, dstCol);
@@ -236,9 +236,9 @@ namespace PBMapper
 
                 Transform dstHolder = (preferMABoneProxyRootForExternal && r.isMAExternal && r.maRootTarget)
                     ? PrepareDestinationHolderWithAnchor(r.sourceTransform, r.maRootTarget, true,
-                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform)
+                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, transformMap)
                     : PrepareDestinationHolder(r.sourceTransform, r.suggestedTarget, true,
-                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, targetPrefabRoot.transform);
+                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, targetPrefabRoot.transform, transformMap);
 
                 var dstPb = MapOrAddComponent<VRCPhysBone>(srcPb, dstHolder);
                 EditorUtility.CopySerialized(srcPb, dstPb);
@@ -307,8 +307,13 @@ namespace PBMapper
                                     it.objectReferenceValue = mapped;
                                 else if (col && col.transform && transformMap.TryGetValue(col.transform, out var tf))
                                 {
-                                    var cands = tf.GetComponents<VRCPhysBoneCollider>();
-                                    if (cands.Length > 0) it.objectReferenceValue = cands[0];
+                                    var dstCands = tf.GetComponents<VRCPhysBoneCollider>();
+                                    if (dstCands.Length > 0)
+                                    {
+                                        var srcCands = col.transform.GetComponents<VRCPhysBoneCollider>();
+                                        int index = Array.IndexOf(srcCands, col);
+                                        it.objectReferenceValue = (index >= 0 && index < dstCands.Length) ? dstCands[index] : dstCands[0];
+                                    }
                                 }
                                 break;
                             }
@@ -323,37 +328,42 @@ namespace PBMapper
         public static Transform PrepareDestinationHolder(
             Transform srcHolder, Transform suggestedDstBone, bool isPhysBone,
             Transform sourceArmatureRoot, bool cloneExternalPBGameObject,
-            Transform sourcePrefabRoot, Transform targetPrefabRoot)
+            Transform sourcePrefabRoot, Transform targetPrefabRoot,
+            Dictionary<Transform, Transform> transformMap)
         {
             bool srcUnderArmature = TransformUtilities.IsUnderRoot(sourceArmatureRoot, srcHolder);
             if (srcUnderArmature) return suggestedDstBone;
             if (cloneExternalPBGameObject)
-                return CloneExternalChainUnderTargetRoot(srcHolder, sourcePrefabRoot, targetPrefabRoot, sourceArmatureRoot);
+                return CloneExternalChainUnderTargetRoot(srcHolder, sourcePrefabRoot, targetPrefabRoot, sourceArmatureRoot, transformMap);
             var container = new GameObject(srcHolder.name);
             container.transform.SetParent(suggestedDstBone, false);
             TransformUtilities.CopyLocalTRS(srcHolder, container.transform);
             Undo.RegisterCreatedObjectUndo(container.gameObject, "Create PB Container");
+            transformMap[srcHolder] = container.transform;
             return container.transform;
         }
 
         public static Transform PrepareDestinationHolderWithAnchor(
             Transform srcHolder, Transform targetAnchor, bool isPhysBone,
             Transform sourceArmatureRoot, bool cloneExternalPBGameObject,
-            Transform sourcePrefabRoot)
+            Transform sourcePrefabRoot,
+            Dictionary<Transform, Transform> transformMap)
         {
             if (TransformUtilities.IsUnderRoot(sourceArmatureRoot, srcHolder)) return targetAnchor;
             if (cloneExternalPBGameObject)
-                return CloneExternalChainUnderTargetRoot(srcHolder, sourcePrefabRoot, targetAnchor, sourceArmatureRoot);
+                return CloneExternalChainUnderTargetRoot(srcHolder, sourcePrefabRoot, targetAnchor, sourceArmatureRoot, transformMap);
             var container = new GameObject(srcHolder.name);
             container.transform.SetParent(targetAnchor, false);
             TransformUtilities.CopyLocalTRS(srcHolder, container.transform);
             Undo.RegisterCreatedObjectUndo(container.gameObject, "Create PB Container (Anchor)");
+            transformMap[srcHolder] = container.transform;
             return container.transform;
         }
 
         public static Transform CloneExternalChainUnderTargetRoot(
             Transform srcLeaf, Transform srcRoot, Transform dstRoot,
-            Transform sourceArmatureRoot)
+            Transform sourceArmatureRoot,
+            Dictionary<Transform, Transform> transformMap)
         {
             var stack = new Stack<Transform>();
             var cur = srcLeaf;
@@ -376,6 +386,7 @@ namespace PBMapper
                     Undo.RegisterCreatedObjectUndo(go, "Clone External PB Chain");
                     existing = go.transform;
                 }
+                transformMap[s] = existing;
                 parent = existing;
                 last = existing;
             }
