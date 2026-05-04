@@ -149,9 +149,10 @@ namespace PBMapper
                     if (leaf)
                     {
                         float score = Mathf.Clamp01(sRoot * 0.7f + sLeaf * 0.5f);
-                        return (leaf, score);
+                        return (score >= 0.6f ? leaf : null, score);
                     }
-                    return (targetRoot, Mathf.Clamp01(sRoot * 0.7f));
+                    float rootScore = Mathf.Clamp01(sRoot * 0.7f);
+                    return (rootScore >= 0.6f ? targetRoot : null, rootScore);
                 }
             }
             return SuggestTargetByName(leafSourceName, targetAll);
@@ -166,7 +167,7 @@ namespace PBMapper
                 float score = FuzzyMatcher.MatchScore(srcName, t.name);
                 if (score > bestScore) { bestScore = score; best = t; }
             }
-            return (best, bestScore);
+            return (bestScore >= 0.6f ? best : null, bestScore);
         }
 
         public static (Transform, float) SuggestTargetByNameInSubtree(Transform searchRoot, string srcName)
@@ -178,7 +179,7 @@ namespace PBMapper
                 float score = FuzzyMatcher.MatchScore(srcName, t.name);
                 if (score > bestScore) { bestScore = score; best = t; }
             }
-            return (best, bestScore);
+            return (bestScore >= 0.6f ? best : null, bestScore);
         }
 
         // ===== ペースト（コピー実行） =====
