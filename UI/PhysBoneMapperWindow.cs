@@ -121,7 +121,10 @@ namespace PBMapper
                     // D&D 対応
                     if (rect.Contains(Event.current.mousePosition) && Event.current.type == EventType.DragUpdated)
                     {
-                        bool ok = DragAndDrop.objectReferences.All(o => o is Transform tf && TransformUtilities.IsUnderRoot(acceptRoot, tf));
+                        bool ok = DragAndDrop.objectReferences.All(o => {
+                            Transform tf = o is GameObject go ? go.transform : o as Transform;
+                            return tf != null && TransformUtilities.IsUnderRoot(acceptRoot, tf);
+                        });
                         DragAndDrop.visualMode = ok ? DragAndDropVisualMode.Copy : DragAndDropVisualMode.Rejected;
                         Event.current.Use();
                     }
@@ -130,7 +133,8 @@ namespace PBMapper
                         DragAndDrop.AcceptDrag();
                         foreach (var obj in DragAndDrop.objectReferences)
                         {
-                            if (obj is Transform tf && TransformUtilities.IsUnderRoot(acceptRoot, tf))
+                            Transform tf = obj is GameObject go ? go.transform : obj as Transform;
+                            if (tf != null && TransformUtilities.IsUnderRoot(acceptRoot, tf))
                             {
                                 if (r.isMAExternal)
                                     r.maRootTarget = tf;
