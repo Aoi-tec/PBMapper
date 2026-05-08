@@ -20,6 +20,7 @@ namespace PBMapper
         public static float MatchScore(string src, string dst)
         {
             string a = NormalizeKey(src); string b = NormalizeKey(dst);
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return 0f;
             if (a == b) return 2.0f;
             if (a.Contains(b) || b.Contains(a)) return 1.5f;
             return Similarity(a, b);
