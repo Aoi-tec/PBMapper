@@ -31,8 +31,9 @@ namespace PBMapper
             IEnumerable<Transform> Enumerate()
             {
                 yield return holder;
+                foreach (var c in holder.GetComponentsInChildren<Transform>(true))
+                    if (c != holder) yield return c;
                 for (var p = holder.parent; p; p = p.parent) yield return p;
-                foreach (var c in holder.GetComponentsInChildren<Transform>(true)) yield return c;
             }
 
             foreach (var tf in Enumerate())
