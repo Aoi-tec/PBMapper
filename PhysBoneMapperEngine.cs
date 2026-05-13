@@ -432,8 +432,9 @@ namespace PBMapper
                 if (tp == typeof(Transform)) continue;
                 if (tp == typeof(VRCPhysBone) || tp == typeof(VRCPhysBoneCollider)) continue;
                 if (dst.GetComponent(tp)) continue;
-                try { var newC = dst.gameObject.AddComponent(tp); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); EditorUtility.CopySerialized(comp, newC); }
-                catch (Exception e) { Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}"); }
+                Component newC = null;
+                try { newC = dst.gameObject.AddComponent(tp); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); EditorUtility.CopySerialized(comp, newC); }
+                catch (Exception e) { if (newC != null) Undo.DestroyObjectImmediate(newC); Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}"); }
             }
         }
 
@@ -446,13 +447,15 @@ namespace PBMapper
                 var tp = comp.GetType();
                 if (tp == typeof(Transform)) continue;
                 if (dst.GetComponent(tp) != null) continue;
-                try { var newC = dst.gameObject.AddComponent(tp); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); EditorUtility.CopySerialized(comp, newC); }
-                catch (Exception e) { Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}"); }
+                Component newC = null;
+                try { newC = dst.gameObject.AddComponent(tp); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); EditorUtility.CopySerialized(comp, newC); }
+                catch (Exception e) { if (newC != null) Undo.DestroyObjectImmediate(newC); Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}"); }
             }
         }
 
         public static (T component, bool created) MapOrAddComponent<T>(T srcComp, Transform dstHolder) where T : Component
         {
+            if (srcComp == null) throw new ArgumentNullException(nameof(srcComp));
             var srcAll = srcComp.gameObject.GetComponents<T>();
             int index = Array.IndexOf(srcAll, srcComp);
             var dstAll = dstHolder.gameObject.GetComponents<T>();
