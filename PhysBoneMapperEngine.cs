@@ -217,7 +217,8 @@ namespace PBMapper
                     : PrepareDestinationHolder(r.sourceTransform, r.suggestedTarget, false,
                         sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, targetPrefabRoot.transform, transformMap);
 
-                var dstCol = MapOrAddComponent<VRCPhysBoneCollider>(srcCol, dstHolder);
+                var (dstCol, colCreated) = MapOrAddComponent<VRCPhysBoneCollider>(srcCol, dstHolder);
+                if (!colCreated) Undo.RecordObject(dstCol, "Paste VRCPhysBoneCollider");
                 EditorUtility.CopySerialized(srcCol, dstCol);
 
                 if (!transformMap.ContainsKey(r.sourceTransform))
@@ -230,7 +231,6 @@ namespace PBMapper
 
                 if (enableHighlight) PBMapperHooks.Highlight?.Invoke(dstHolder.gameObject, false);
                 EditorGUIUtility.PingObject(dstHolder);
-                Undo.RegisterCreatedObjectUndo(dstCol, "Paste VRCPhysBoneCollider");
             }
 
             // 2) PhysBones
@@ -244,7 +244,8 @@ namespace PBMapper
                     : PrepareDestinationHolder(r.sourceTransform, r.suggestedTarget, true,
                         sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, targetPrefabRoot.transform, transformMap);
 
-                var dstPb = MapOrAddComponent<VRCPhysBone>(srcPb, dstHolder);
+                var (dstPb, pbCreated) = MapOrAddComponent<VRCPhysBone>(srcPb, dstHolder);
+                if (!pbCreated) Undo.RecordObject(dstPb, "Paste VRCPhysBone");
                 EditorUtility.CopySerialized(srcPb, dstPb);
 
                 if (!transformMap.ContainsKey(r.sourceTransform))
@@ -259,7 +260,6 @@ namespace PBMapper
 
                 if (enableHighlight) PBMapperHooks.Highlight?.Invoke(dstHolder.gameObject, true);
                 EditorGUIUtility.PingObject(dstHolder);
-                Undo.RegisterCreatedObjectUndo(dstPb, "Paste VRCPhysBone");
             }
 
             // 3) 一括リマップ
@@ -432,7 +432,7 @@ namespace PBMapper
                 if (tp == typeof(Transform)) continue;
                 if (tp == typeof(VRCPhysBone) || tp == typeof(VRCPhysBoneCollider)) continue;
                 if (dst.GetComponent(tp)) continue;
-                try { var newC = dst.gameObject.AddComponent(tp); EditorUtility.CopySerialized(comp, newC); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); }
+                try { var newC = dst.gameObject.AddComponent(tp); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); EditorUtility.CopySerialized(comp, newC); }
                 catch (Exception e) { Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}"); }
             }
         }
@@ -446,18 +446,20 @@ namespace PBMapper
                 var tp = comp.GetType();
                 if (tp == typeof(Transform)) continue;
                 if (dst.GetComponent(tp) != null) continue;
-                try { var newC = dst.gameObject.AddComponent(tp); EditorUtility.CopySerialized(comp, newC); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); }
+                try { var newC = dst.gameObject.AddComponent(tp); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); EditorUtility.CopySerialized(comp, newC); }
                 catch (Exception e) { Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}"); }
             }
         }
 
-        public static T MapOrAddComponent<T>(T srcComp, Transform dstHolder) where T : Component
+        public static (T component, bool created) MapOrAddComponent<T>(T srcComp, Transform dstHolder) where T : Component
         {
             var srcAll = srcComp.gameObject.GetComponents<T>();
             int index = Array.IndexOf(srcAll, srcComp);
             var dstAll = dstHolder.gameObject.GetComponents<T>();
-            if (index >= 0 && index < dstAll.Length) return dstAll[index];
-            return dstHolder.gameObject.AddComponent<T>();
+            if (index >= 0 && index < dstAll.Length) return (dstAll[index], false);
+            var newComp = dstHolder.gameObject.AddComponent<T>();
+            Undo.RegisterCreatedObjectUndo(newComp, $"Add {typeof(T).Name}");
+            return (newComp, true);
         }
     }
 }
