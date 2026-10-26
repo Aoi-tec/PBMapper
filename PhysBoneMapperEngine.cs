@@ -12,7 +12,6 @@ using Object = UnityEngine.Object;
 
 namespace PBMapper
 {
-    /// <summary>参照リマップに必要な対応表と、結果レポート</summary>
     public sealed class RemapContext
     {
         public Dictionary<Component, Component> componentMap = new Dictionary<Component, Component>();
@@ -20,9 +19,7 @@ namespace PBMapper
         public Dictionary<Transform, float> scores = new Dictionary<Transform, float>();
         public Transform sourceRoot;
 
-        /// <summary>ソース側を指していたが対応先が見つからず None にした参照</summary>
         public readonly List<string> unresolved = new List<string>();
-        /// <summary>名前の一致度が低いまま繋ぎ替えた参照（要確認）</summary>
         public readonly List<string> lowConfidence = new List<string>();
         readonly HashSet<Transform> reportedLow = new HashSet<Transform>();
 
@@ -64,7 +61,6 @@ namespace PBMapper
             targetAll = TransformUtilities.Collect(scopePrefabWide ? targetPrefabRoot.transform : targetArmatureRoot);
             if (sourceAll.Count == 0 || targetAll.Count == 0) return;
 
-            // 階層を考慮したボーン対応表（サジェストと Paste 時のリマップで同じロジックを使う）
             var scores = new Dictionary<Transform, float>();
             var map = BuildTransformMap(sourceAll, targetAll,
                 RootSeeds(sourcePrefabRoot.transform, targetPrefabRoot.transform, sourceArmatureRoot, targetArmatureRoot),
@@ -119,10 +115,6 @@ namespace PBMapper
 
         // ===== サジェスト =====
 
-        /// <summary>
-        /// ソース側ボーンの対応先を返す。対応表にあればそれを、なければ名前のみで探索。
-        /// restrictRoot を指定した場合はその配下の候補のみ。
-        /// </summary>
         public static (Transform, float) SuggestForBone(
             Transform srcBone,
             Dictionary<Transform, Transform> map,
@@ -161,7 +153,6 @@ namespace PBMapper
             return SuggestTargetByName(srcName, TransformUtilities.Collect(searchRoot));
         }
 
-        // ===== ボーン対応表 =====
 
         public static IEnumerable<KeyValuePair<Transform, Transform>> RootSeeds(
             Transform sourcePrefabRoot, Transform targetPrefabRoot,
@@ -173,13 +164,7 @@ namespace PBMapper
                 yield return new KeyValuePair<Transform, Transform>(sourceArmatureRoot, targetArmatureRoot);
         }
 
-        /// <summary>
-        /// ソース Transform → ターゲット Transform の対応表を作る。
-        /// ・seeds（Prefab Root / Armature / UIで指定したターゲット）は最優先で確定
-        /// ・親から順に処理し、「対応済みの親の直下／配下」にある候補へボーナスを与える
-        ///   → 同名ボーン (HairFront/Hair_1 と HairBack/Hair_1 など) を取り違えない
-        /// ・FuzzyMatcher で左右逆・連番違いは弾かれる
-        /// </summary>
+        // 親の対応を優先しつつ、名前でソース→ターゲットの対応表を作る
         public static Dictionary<Transform, Transform> BuildTransformMap(
             List<Transform> src, List<Transform> dst,
             IEnumerable<KeyValuePair<Transform, Transform>> seeds = null,
@@ -201,7 +186,6 @@ namespace PBMapper
             foreach (var t in dst)
                 if (t) dstKeys.Add(new KeyValuePair<Transform, NameKey>(t, FuzzyMatcher.Parse(t.name)));
 
-            // Collect() は GetComponentsInChildren 順（親→子）なので、親の対応が先に決まる
             foreach (var s in src)
             {
                 if (!s || map.ContainsKey(s)) continue;
@@ -263,10 +247,9 @@ namespace PBMapper
             }
         }
 
-        /// <summary>行のターゲットが対応すべきソース側ボーン（rootTransform、未設定なら PB/Collider の付いている Transform）</summary>
         static Transform GetKeyBone(MappingRow r)
         {
-            // Unity の fake null 対策で ?? は使わない
+            // fake null 対策で ?? は使わない
             var root = GetComponentRoot(r.sourceComponent);
             return root ? root : r.sourceTransform;
         }
@@ -302,7 +285,6 @@ namespace PBMapper
             {
                 var applied = rows.Where(r => r != null && r.apply && r.sourceComponent && r.sourceTransform && GetRowTarget(r, preferMA)).ToList();
 
-                // --- 対応表: UIで確定したターゲットを seed にして、配下のボーンもそれに追従させる
                 var seeds = RootSeeds(srcRoot, dstRoot, sourceArmatureRoot, targetArmatureRoot).ToList();
                 foreach (var r in applied)
                 {
@@ -319,7 +301,7 @@ namespace PBMapper
                 var siblingDone = new HashSet<(Transform, Transform)>();
                 Transform lastHolder = null;
 
-                // 1) Collider → 2) PhysBone の順（PB の colliders 参照を新しい Collider に繋ぐため）
+                // Collider → PhysBone の順
                 foreach (var kind in new[] { MappingRow.Kind.Collider, MappingRow.Kind.PhysBone })
                 {
                     foreach (var r in applied.Where(x => x.kind == kind))
@@ -337,7 +319,6 @@ namespace PBMapper
 
                         bool holderExternal = !TransformUtilities.IsUnderRoot(sourceArmatureRoot, r.sourceTransform);
 
-                        // Armature 外 PB を GameObject ごと複製する場合、揺らすボーン（rootTransform 以下）も複製する
                         if (isPB && holderExternal && cloneExternalPBGameObject)
                         {
                             var effRoot = GetKeyBone(r);
@@ -361,12 +342,10 @@ namespace PBMapper
                         if (!ctx.transformMap.ContainsKey(r.sourceTransform))
                             ctx.transformMap[r.sourceTransform] = dstHolder;
 
-                        // rootTransform がボーンを指していた場合、UI で指定したターゲットを必ず使う
                         var srcCompRoot = GetComponentRoot(r.sourceComponent);
                         if (!anchor && srcCompRoot && TransformUtilities.IsUnderRoot(sourceArmatureRoot, srcCompRoot))
                             forcedRoots.Add(new KeyValuePair<Component, Transform>(dstComp, target));
 
-                        // PB/Collider 以外のコンポーネント（Contact / Constraint / MA など）
                         if (isPB && copyOtherComponents && siblingDone.Add((r.sourceTransform, dstHolder)))
                         {
                             foreach (var pair in CopySiblingComponents(r.sourceTransform, dstHolder))
@@ -385,14 +364,14 @@ namespace PBMapper
                     }
                 }
 
-                // 3) 一括リマップ（コピーした全コンポーネントの参照をターゲット側へ）
+                // 一括リマップ
                 foreach (var c in remapTargets)
                     RemapAllObjectReferences(c, ctx);
 
                 foreach (var kv in forcedRoots)
                     SetObjectReference(kv.Key, "rootTransform", kv.Value);
 
-                // 4) MA BoneProxy のターゲット更新（リマップ後に行い上書きされないようにする）
+                // MA の target はリマップ後に設定
                 foreach (var kv in maUpdates)
                     PBMapperHooks.UpdateMABoneProxyRootLocal?.Invoke(kv.Key, kv.Value);
 
@@ -403,7 +382,6 @@ namespace PBMapper
                 Undo.CollapseUndoOperations(undoGroup);
             }
 
-            // --- レポート
             if (ctx.lowConfidence.Count > 0)
                 Debug.LogWarning("[PhysBoneMapper] 名前の一致度が低い繋ぎ替え（確認してください）:\n" + string.Join("\n", ctx.lowConfidence));
             if (ctx.unresolved.Count > 0)
@@ -441,15 +419,9 @@ namespace PBMapper
 
         // ===== 参照リマップ =====
 
-        /// <summary>互換用：名前ベースの対応表（seed なし）</summary>
         public static Dictionary<Transform, Transform> BuildTransformMap(List<Transform> src, List<Transform> dst)
             => BuildTransformMap(src, dst, null, null);
 
-        /// <summary>
-        /// コンポーネント内の全 ObjectReference を走査し、ソース Prefab 内を指す参照をターゲット側へ繋ぎ替える。
-        /// Transform / GameObject / 任意の Component（Collider, Contact, Constraint 等）に対応。
-        /// 対応先が無い参照は None にする（ソース素体への参照が残らないように）。
-        /// </summary>
         public static void RemapAllObjectReferences(Component target, RemapContext ctx)
         {
             if (!target || ctx == null) return;
@@ -474,7 +446,6 @@ namespace PBMapper
                 if (!resolved)
                 {
                     ctx.unresolved.Add($"{target.transform.GetHierarchyPath()} [{target.GetType().Name}] {it.propertyPath} : {Describe(obj)}");
-                    // PB の colliders / ignoreTransforms などのリストからは空要素を取り除く
                     if (compactArrays && TryParseArrayElement(it.propertyPath, out var arrayPath, out var index))
                         toRemove.Add(new KeyValuePair<string, int>(arrayPath, index));
                 }
@@ -492,7 +463,6 @@ namespace PBMapper
             if (changed) so.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        /// <summary>互換用オーバーロード</summary>
         public static void RemapAllObjectReferences(SerializedObject so,
             Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider> cmap,
             Dictionary<Transform, Transform> transformMap,
@@ -506,10 +476,6 @@ namespace PBMapper
             so.Update();
         }
 
-        /// <summary>
-        /// obj がソース Prefab 内のシーンオブジェクトなら true を返し、resolved に繋ぎ替え先（無ければ null）を入れる。
-        /// ソース外（ターゲット側・アセット・他オブジェクト）の参照なら false（触らない）。
-        /// </summary>
         static bool TryResolve(Object obj, RemapContext ctx, out Object resolved)
         {
             resolved = obj;
@@ -613,7 +579,6 @@ namespace PBMapper
             return container;
         }
 
-        /// <summary>parent 直下に src と同名の子があれば再利用、なければ作成（再 Paste で重複させない）</summary>
         static Transform GetOrCreateChild(Transform parent, Transform src, string undoName)
         {
             var existing = TransformUtilities.FindChildByName(parent, src.name);
@@ -650,7 +615,6 @@ namespace PBMapper
             return last != null ? last : dstRoot;
         }
 
-        /// <summary>src の子孫（Armature 外のもの）を dst 以下に Transform 構造だけ複製し、対応表に登録する</summary>
         public static void CloneSubtree(Transform src, Transform dst, Transform sourceArmatureRoot, Dictionary<Transform, Transform> transformMap)
         {
             if (!src || !dst) return;
@@ -664,11 +628,6 @@ namespace PBMapper
             }
         }
 
-        /// <summary>
-        /// PB/Collider 以外のコンポーネントをコピーし、(ソース, 作成先) の組を返す。
-        /// 戻り値は呼び出し側で参照リマップの対象に加えること（Issue #4）。
-        /// ターゲットに同種コンポーネントが既にある分は上書きしない。
-        /// </summary>
         public static List<KeyValuePair<Component, Component>> CopySiblingComponents(Transform src, Transform dst)
         {
             var result = new List<KeyValuePair<Component, Component>>();
@@ -679,7 +638,7 @@ namespace PBMapper
 
             foreach (var comp in src.GetComponents<Component>())
             {
-                if (comp == null) continue; // Missing Script
+                if (comp == null) continue;
                 var tp = comp.GetType();
                 if (comp is Transform) continue;
                 if (comp is VRCPhysBone || comp is VRCPhysBoneCollider) continue;
@@ -711,11 +670,6 @@ namespace PBMapper
             return result;
         }
 
-        /// <summary>
-        /// dstHolder 上の既存コンポーネントを再利用するか、新規追加する。
-        /// slotCounter を渡すと「同じ dstHolder に何個目に貼るか」で既存を選ぶため、
-        /// rootTransform 側に貼る場合や再 Paste でも重複しない。
-        /// </summary>
         public static (T component, bool created) MapOrAddComponent<T>(
             T srcComp, Transform dstHolder,
             Dictionary<(Transform, Type), int> slotCounter = null) where T : Component

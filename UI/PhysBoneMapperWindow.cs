@@ -24,7 +24,6 @@ namespace PBMapper
 
         private readonly List<MappingRow> rows = new();
 
-        // Scan 時の入力（Scan 後に Prefab を差し替えたまま Paste しないためのガード）
         private GameObject scannedSource;
         private GameObject scannedTarget;
 

@@ -41,13 +41,7 @@ namespace PBMapper
             return list;
         }
 
-        /// <summary>
-        /// Armature を推定する。
-        /// 1) Humanoid Animator があれば Hips の親
-        /// 2) 名前に "armature" を含む Transform のうち最も浅いもの
-        ///    （衣装側の "Outfit_Armature" 等より素体の Armature を優先するため）
-        /// 3) 見つからなければ root
-        /// </summary>
+        // Humanoid なら Hips の親、それ以外は名前に "armature" を含む最も浅い Transform
         public static Transform AutoDetectArmature(Transform root)
         {
             if (!root) return null;
