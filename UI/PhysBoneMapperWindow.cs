@@ -8,7 +8,7 @@ namespace PBMapper
 {
     public class PhysBoneMapperWindow : EditorWindow
     {
-        [MenuItem("Tools/Aoisan/PhysBone Mapper")]
+        [MenuItem("Tools/aoistool/PhysBone Mapper")]
         public static void Open() => GetWindow<PhysBoneMapperWindow>("PhysBone Mapper");
 
         // === 入力 ===
