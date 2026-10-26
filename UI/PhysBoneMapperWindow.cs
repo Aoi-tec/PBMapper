@@ -24,6 +24,9 @@ namespace PBMapper
 
         private readonly List<MappingRow> rows = new();
 
+        private GameObject scannedSource;
+        private GameObject scannedTarget;
+
         // オプション
         private bool copyOtherComponents = true;
         private bool scopePrefabWide = true;
@@ -62,15 +65,26 @@ namespace PBMapper
                 }
             }
 
+            bool scanStale = rows.Count > 0 && (scannedSource != sourcePrefabRoot || scannedTarget != targetPrefabRoot);
+            if (scanStale)
+                EditorGUILayout.HelpBox("Scan 後に Source / Target が変更されています。もう一度 Scan してください。", MessageType.Warning);
+            if (sourcePrefabRoot && sourcePrefabRoot == targetPrefabRoot)
+                EditorGUILayout.HelpBox("Source と Target が同じオブジェクトです。", MessageType.Error);
+
             using (new EditorGUILayout.HorizontalScope())
             {
-                GUI.enabled = sourcePrefabRoot && targetPrefabRoot;
+                GUI.enabled = sourcePrefabRoot && targetPrefabRoot && sourcePrefabRoot != targetPrefabRoot;
                 if (GUILayout.Button("Scan (候補生成)"))
+                {
                     PhysBoneMapperEngine.Scan(rows, sourcePrefabRoot, targetPrefabRoot,
                         ref sourceArmatureRoot, ref targetArmatureRoot,
                         ref sourceAll, ref targetAll,
                         scopePrefabWide,
                         PBMapperHooks.IsProAvailable && preferMABoneProxyRootForExternal);
+                    scannedSource = sourcePrefabRoot;
+                    scannedTarget = targetPrefabRoot;
+                }
+                GUI.enabled = GUI.enabled && rows.Count > 0 && !scanStale;
                 if (GUILayout.Button("Paste (コピー実行)"))
                     PhysBoneMapperEngine.ApplyCopy(rows, sourcePrefabRoot, targetPrefabRoot,
                         sourceArmatureRoot, targetArmatureRoot,
@@ -79,6 +93,16 @@ namespace PBMapper
                         PBMapperHooks.IsProAvailable && preferMABoneProxyRootForExternal,
                         PBMapperHooks.IsProAvailable && enableHighlight);
                 GUI.enabled = true;
+            }
+
+            if (rows.Count > 0)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Label($"Source Armature: {(sourceArmatureRoot ? sourceArmatureRoot.name : "-")}  /  Target Armature: {(targetArmatureRoot ? targetArmatureRoot.name : "-")}", EditorStyles.miniLabel);
+                    int missing = rows.Count(r => !(r.isMAExternal ? r.maRootTarget : r.suggestedTarget));
+                    if (missing > 0) GUILayout.Label($"ターゲット未設定: {missing} 行（スキップされます）", EditorStyles.miniBoldLabel);
+                }
             }
 
             // --- ヘッダを統合
@@ -107,7 +131,7 @@ namespace PBMapper
 
                     var rect = GUILayoutUtility.GetRect(halfFlex, EditorGUIUtility.singleLineHeight);
                     Transform current = r.isMAExternal ? r.maRootTarget : r.suggestedTarget;
-                    Transform acceptRoot = targetArmatureRoot ? targetArmatureRoot : targetPrefabRoot?.transform;
+                    Transform acceptRoot = targetArmatureRoot ? targetArmatureRoot : (targetPrefabRoot ? targetPrefabRoot.transform : null);
 
                     Transform newTarget = (Transform)EditorGUI.ObjectField(rect, current, typeof(Transform), true);
                     if (newTarget != null && !TransformUtilities.IsUnderRoot(acceptRoot, newTarget))

@@ -2,15 +2,42 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using UnityEditor;
 using UnityEngine;
 
 using VRC.SDK3.Dynamics.PhysBone.Components;
 
+using Object = UnityEngine.Object;
+
 namespace PBMapper
 {
+    public sealed class RemapContext
+    {
+        public Dictionary<Component, Component> componentMap = new Dictionary<Component, Component>();
+        public Dictionary<Transform, Transform> transformMap = new Dictionary<Transform, Transform>();
+        public Dictionary<Transform, float> scores = new Dictionary<Transform, float>();
+        public Transform sourceRoot;
+
+        public readonly List<string> unresolved = new List<string>();
+        public readonly List<string> lowConfidence = new List<string>();
+        readonly HashSet<Transform> reportedLow = new HashSet<Transform>();
+
+        internal void NoteMapped(Transform src, Transform dst)
+        {
+            if (!src || !dst || reportedLow.Contains(src)) return;
+            if (scores.TryGetValue(src, out var s) && s < 1.5f)
+            {
+                reportedLow.Add(src);
+                lowConfidence.Add($"{src.GetHierarchyPath()} → {dst.GetHierarchyPath()} (score {s:F2})");
+            }
+        }
+    }
+
     public static class PhysBoneMapperEngine
     {
+        const float Threshold = FuzzyMatcher.MinScore;
+
         // ===== スキャン =====
 
         public static void Scan(
@@ -34,155 +61,198 @@ namespace PBMapper
             targetAll = TransformUtilities.Collect(scopePrefabWide ? targetPrefabRoot.transform : targetArmatureRoot);
             if (sourceAll.Count == 0 || targetAll.Count == 0) return;
 
+            var scores = new Dictionary<Transform, float>();
+            var map = BuildTransformMap(sourceAll, targetAll,
+                RootSeeds(sourcePrefabRoot.transform, targetPrefabRoot.transform, sourceArmatureRoot, targetArmatureRoot),
+                scores);
+
+            var srcArm = sourceArmatureRoot;
+            var dstArm = targetArmatureRoot;
+            var dstAllLocal = targetAll;
+
+            void AddRow(MappingRow.Kind kind, Component comp, Transform holder, Transform compRoot)
+            {
+                bool hasLocalMA = PBMapperHooks.HasLocalMABoneProxy?.Invoke(holder) ?? false;
+                bool isOutside = srcArm && !TransformUtilities.IsUnderRoot(srcArm, holder);
+                Transform proxyRoot = null;
+                if (preferMABoneProxyRootForExternal && isOutside)
+                    proxyRoot = PBMapperHooks.TryGetMABoneProxyRoot?.Invoke(holder);
+
+                Transform cand; float score;
+                if (proxyRoot)
+                    (cand, score) = SuggestForBone(proxyRoot, map, scores, dstArm, dstAllLocal);
+                else
+                    (cand, score) = SuggestForBone(compRoot ? compRoot : holder, map, scores, null, dstAllLocal);
+
+                string label = kind == MappingRow.Kind.PhysBone ? "PhysBone" : "Collider";
+                string info = cand ? $"{score:F2}" : $"未検出 ({Mathf.Max(score, 0f):F2})";
+                if (proxyRoot) info += $" (via:{proxyRoot.name})";
+
+                rows.Add(new MappingRow
+                {
+                    kind = kind,
+                    kindLabel = hasLocalMA ? "MA/" + label : label,
+                    sourceComponent = comp,
+                    sourceTransform = holder,
+                    suggestedTarget = cand,
+                    isMAExternal = proxyRoot,
+                    maRootHint = proxyRoot,
+                    maRootTarget = proxyRoot ? cand : null,
+                    score = score,
+                    info = info
+                });
+            }
+
             foreach (var t in sourceAll)
             {
-                // === PhysBone ===
+                if (!t) continue;
                 foreach (var pb in t.GetComponents<VRCPhysBone>())
-                {
-                    bool hasLocalMA = PBMapperHooks.HasLocalMABoneProxy?.Invoke(t) ?? false;
-                    bool isOutside = sourceArmatureRoot && !TransformUtilities.IsUnderRoot(sourceArmatureRoot, t);
-                    Transform proxyRoot = null;
-                    if (preferMABoneProxyRootForExternal && isOutside)
-                        proxyRoot = PBMapperHooks.TryGetMABoneProxyRoot?.Invoke(t);
-
-                    Transform cand; float score;
-                    if (proxyRoot)
-                    {
-                        (cand, score) = SuggestTargetByNameInSubtree(targetArmatureRoot, proxyRoot.name);
-                    }
-                    else
-                    {
-                        (cand, score) = SuggestTargetForPhysBone(pb, sourceArmatureRoot, targetArmatureRoot, targetAll, preferMABoneProxyRootForExternal);
-                    }
-
-                    rows.Add(new MappingRow
-                    {
-                        kind = MappingRow.Kind.PhysBone,
-                        kindLabel = hasLocalMA ? "MA/PhysBone" : "PhysBone",
-                        sourceComponent = pb,
-                        sourceTransform = t,
-                        suggestedTarget = cand,
-                        isMAExternal = proxyRoot,
-                        maRootHint = proxyRoot,
-                        maRootTarget = proxyRoot ? cand : null,
-                        score = score,
-                        info = proxyRoot ? $"{score:F2} (via:{proxyRoot.name})" : $"{score:F2}"
-                    });
-                }
-
-                // === Colliders ===
+                    AddRow(MappingRow.Kind.PhysBone, pb, t, pb.rootTransform);
                 foreach (var col in t.GetComponents<VRCPhysBoneCollider>())
-                {
-                    bool hasLocalMA = PBMapperHooks.HasLocalMABoneProxy?.Invoke(t) ?? false;
-                    bool isOutside = sourceArmatureRoot && !TransformUtilities.IsUnderRoot(sourceArmatureRoot, t);
-                    Transform proxyRoot = null;
-                    if (preferMABoneProxyRootForExternal && isOutside)
-                        proxyRoot = PBMapperHooks.TryGetMABoneProxyRoot?.Invoke(t);
-
-                    Transform cand; float score;
-                    if (proxyRoot)
-                    {
-                        (cand, score) = SuggestTargetByNameInSubtree(targetArmatureRoot, proxyRoot.name);
-                    }
-                    else
-                    {
-                        (cand, score) = SuggestTargetForCollider(col, targetAll);
-                    }
-
-                    rows.Add(new MappingRow
-                    {
-                        kind = MappingRow.Kind.Collider,
-                        kindLabel = hasLocalMA ? "MA/Collider" : "Collider",
-                        sourceComponent = col,
-                        sourceTransform = t,
-                        suggestedTarget = cand,
-                        isMAExternal = proxyRoot,
-                        maRootHint = proxyRoot,
-                        maRootTarget = proxyRoot ? cand : null,
-                        score = score,
-                        info = proxyRoot ? $"{score:F2} (via:{proxyRoot.name})" : $"{score:F2}"
-                    });
-                }
+                    AddRow(MappingRow.Kind.Collider, col, t, col.rootTransform);
             }
         }
 
         // ===== サジェスト =====
 
-        public static (Transform, float) SuggestTargetForPhysBone(
-            VRCPhysBone srcPb,
-            Transform sourceArmatureRoot,
-            Transform targetArmatureRoot,
-            List<Transform> targetAll,
-            bool preferMABoneProxyRootForExternal)
-        {
-            if (!srcPb) return (null, 0);
-            if (preferMABoneProxyRootForExternal && sourceArmatureRoot && !TransformUtilities.IsUnderRoot(sourceArmatureRoot, srcPb.transform))
-            {
-                var proxyRoot = PBMapperHooks.TryGetMABoneProxyRoot?.Invoke(srcPb.transform);
-                if (proxyRoot) return SuggestTargetByRootFirst(
-                    srcPb.rootTransform ? srcPb.rootTransform.name : srcPb.transform.name,
-                    proxyRoot, targetArmatureRoot, targetAll);
-            }
-            if (srcPb.rootTransform) return SuggestTargetByName(srcPb.rootTransform.name, targetAll);
-            return SuggestTargetByName(srcPb.transform.name, targetAll);
-        }
-
-        public static (Transform, float) SuggestTargetForCollider(
-            VRCPhysBoneCollider srcCol,
+        public static (Transform, float) SuggestForBone(
+            Transform srcBone,
+            Dictionary<Transform, Transform> map,
+            Dictionary<Transform, float> scores,
+            Transform restrictRoot,
             List<Transform> targetAll)
         {
-            if (!srcCol) return (null, 0);
-            if (srcCol.rootTransform) return SuggestTargetByName(srcCol.rootTransform.name, targetAll);
-            return SuggestTargetByName(srcCol.transform.name, targetAll);
-        }
-
-        public static (Transform, float) SuggestTargetByRootFirst(
-            string leafSourceName, Transform maRootHint,
-            Transform targetArmatureRoot, List<Transform> targetAll)
-        {
-            if (maRootHint && targetArmatureRoot)
+            if (!srcBone) return (null, 0);
+            if (map != null && map.TryGetValue(srcBone, out var dst) && dst &&
+                (!restrictRoot || TransformUtilities.IsUnderRoot(restrictRoot, dst)))
             {
-                var (targetRoot, sRoot) = SuggestTargetByNameInSubtree(targetArmatureRoot, maRootHint.name);
-                if (targetRoot)
-                {
-                    var (leaf, sLeaf) = SuggestTargetByNameInSubtree(targetRoot, leafSourceName);
-                    if (leaf)
-                    {
-                        float score = Mathf.Clamp01(sRoot * 0.7f + sLeaf * 0.5f);
-                        return (score >= 0.6f ? leaf : null, score);
-                    }
-                    float rootScore = Mathf.Clamp01(sRoot * 0.7f);
-                    return (rootScore >= 0.6f ? targetRoot : null, rootScore);
-                }
+                float s = (scores != null && scores.TryGetValue(srcBone, out var v)) ? v : 2f;
+                return (dst, s);
             }
-            return SuggestTargetByName(leafSourceName, targetAll);
+            if (restrictRoot) return SuggestTargetByNameInSubtree(restrictRoot, srcBone.name);
+            return SuggestTargetByName(srcBone.name, targetAll);
         }
 
         public static (Transform, float) SuggestTargetByName(string srcName, List<Transform> targetAll)
         {
-            if (string.IsNullOrEmpty(srcName)) return (null, 0);
+            if (string.IsNullOrEmpty(srcName) || targetAll == null) return (null, 0);
+            var sk = FuzzyMatcher.Parse(srcName);
             float bestScore = float.NegativeInfinity; Transform best = null;
             foreach (var t in targetAll)
             {
-                float score = FuzzyMatcher.MatchScore(srcName, t.name);
+                if (!t) continue;
+                float score = FuzzyMatcher.MatchScore(sk, FuzzyMatcher.Parse(t.name));
                 if (score > bestScore) { bestScore = score; best = t; }
             }
-            return (bestScore >= 0.6f ? best : null, bestScore);
+            return (bestScore >= Threshold ? best : null, bestScore);
         }
 
         public static (Transform, float) SuggestTargetByNameInSubtree(Transform searchRoot, string srcName)
         {
             if (!searchRoot || string.IsNullOrEmpty(srcName)) return (null, 0);
-            float bestScore = float.NegativeInfinity; Transform best = null;
-            foreach (var t in searchRoot.GetComponentsInChildren<Transform>(true))
+            return SuggestTargetByName(srcName, TransformUtilities.Collect(searchRoot));
+        }
+
+
+        public static IEnumerable<KeyValuePair<Transform, Transform>> RootSeeds(
+            Transform sourcePrefabRoot, Transform targetPrefabRoot,
+            Transform sourceArmatureRoot, Transform targetArmatureRoot)
+        {
+            if (sourcePrefabRoot && targetPrefabRoot)
+                yield return new KeyValuePair<Transform, Transform>(sourcePrefabRoot, targetPrefabRoot);
+            if (sourceArmatureRoot && targetArmatureRoot)
+                yield return new KeyValuePair<Transform, Transform>(sourceArmatureRoot, targetArmatureRoot);
+        }
+
+        // 親の対応を優先しつつ、名前でソース→ターゲットの対応表を作る
+        public static Dictionary<Transform, Transform> BuildTransformMap(
+            List<Transform> src, List<Transform> dst,
+            IEnumerable<KeyValuePair<Transform, Transform>> seeds = null,
+            Dictionary<Transform, float> scores = null)
+        {
+            var map = new Dictionary<Transform, Transform>();
+            if (seeds != null)
             {
-                float score = FuzzyMatcher.MatchScore(srcName, t.name);
-                if (score > bestScore) { bestScore = score; best = t; }
+                foreach (var kv in seeds)
+                {
+                    if (!kv.Key || !kv.Value || map.ContainsKey(kv.Key)) continue;
+                    map[kv.Key] = kv.Value;
+                    if (scores != null) scores[kv.Key] = 2f;
+                }
             }
-            return (bestScore >= 0.6f ? best : null, bestScore);
+            if (src == null || dst == null) return map;
+
+            var dstKeys = new List<KeyValuePair<Transform, NameKey>>(dst.Count);
+            foreach (var t in dst)
+                if (t) dstKeys.Add(new KeyValuePair<Transform, NameKey>(t, FuzzyMatcher.Parse(t.name)));
+
+            foreach (var s in src)
+            {
+                if (!s || map.ContainsKey(s)) continue;
+                var sk = FuzzyMatcher.Parse(s.name);
+                if (sk.IsEmpty) continue;
+
+                Transform mappedAnc = null; bool ancIsParent = false;
+                for (var p = s.parent; p; p = p.parent)
+                {
+                    if (map.TryGetValue(p, out var mp)) { mappedAnc = mp; ancIsParent = p == s.parent; break; }
+                }
+
+                Transform best = null;
+                float bestRank = float.NegativeInfinity, bestRaw = 0f;
+                int bestLevel = -1;
+                foreach (var kv in dstKeys)
+                {
+                    float raw = FuzzyMatcher.MatchScore(sk, kv.Value);
+                    if (raw < Threshold) continue;
+
+                    var t = kv.Key;
+                    int level = 0;
+                    if (mappedAnc)
+                    {
+                        if (t.parent == mappedAnc) level = ancIsParent ? 2 : 1;
+                        else if (t != mappedAnc && TransformUtilities.IsUnderRoot(mappedAnc, t)) level = 1;
+                    }
+                    float rank = raw + level * 0.25f;
+                    if (rank > bestRank || (rank == bestRank && level > bestLevel))
+                    {
+                        bestRank = rank; bestRaw = raw; bestLevel = level; best = t;
+                    }
+                }
+
+                if (best)
+                {
+                    map[s] = best;
+                    if (scores != null) scores[s] = bestRaw;
+                }
+            }
+            return map;
         }
 
         // ===== ペースト（コピー実行） =====
+
+        static Transform GetRowTarget(MappingRow r, bool preferMA)
+            => (preferMA && r.isMAExternal) ? r.maRootTarget : r.suggestedTarget;
+
+        static bool UseAnchor(MappingRow r, bool preferMA)
+            => preferMA && r.isMAExternal && r.maRootTarget;
+
+        static Transform GetComponentRoot(Component c)
+        {
+            switch (c)
+            {
+                case VRCPhysBone pb: return pb.rootTransform;
+                case VRCPhysBoneCollider col: return col.rootTransform;
+                default: return null;
+            }
+        }
+
+        static Transform GetKeyBone(MappingRow r)
+        {
+            // fake null 対策で ?? は使わない
+            var root = GetComponentRoot(r.sourceComponent);
+            return root ? root : r.sourceTransform;
+        }
 
         public static void ApplyCopy(
             List<MappingRow> rows,
@@ -197,114 +267,201 @@ namespace PBMapper
             bool preferMABoneProxyRootForExternal,
             bool enableHighlight = true)
         {
-            if (!targetPrefabRoot) return;
-
-            var colliderMap = new Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider>();
-            var transformMap = BuildTransformMap(sourceAll, targetAll);
+            if (!sourcePrefabRoot || !targetPrefabRoot) return;
+            var srcRoot = sourcePrefabRoot.transform;
+            var dstRoot = targetPrefabRoot.transform;
+            bool preferMA = preferMABoneProxyRootForExternal;
 
             if (enableHighlight) PBMapperHooks.ClearAllHighlights?.Invoke();
 
-            var remapTargets = new List<SerializedObject>(rows.Count);
+            Undo.IncrementCurrentGroup();
+            int undoGroup = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName("PhysBone Mapper: Paste");
 
-            // 1) Colliders 先にコピー
-            foreach (var r in rows.Where(x => x.apply && x.kind == MappingRow.Kind.Collider && x.suggestedTarget))
+            var ctx = new RemapContext { sourceRoot = srcRoot };
+            int pbCount = 0, colCount = 0, otherCount = 0;
+
+            try
             {
-                var srcCol = r.sourceComponent as VRCPhysBoneCollider; if (!srcCol) continue;
+                var applied = rows.Where(r => r != null && r.apply && r.sourceComponent && r.sourceTransform && GetRowTarget(r, preferMA)).ToList();
 
-                Transform dstHolder = (preferMABoneProxyRootForExternal && r.isMAExternal && r.maRootTarget)
-                    ? PrepareDestinationHolderWithAnchor(r.sourceTransform, r.maRootTarget, false,
-                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, transformMap)
-                    : PrepareDestinationHolder(r.sourceTransform, r.suggestedTarget, false,
-                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, targetPrefabRoot.transform, transformMap);
+                var seeds = RootSeeds(srcRoot, dstRoot, sourceArmatureRoot, targetArmatureRoot).ToList();
+                foreach (var r in applied)
+                {
+                    var key = UseAnchor(r, preferMA) ? r.maRootHint : GetKeyBone(r);
+                    if (key && TransformUtilities.IsUnderRoot(sourceArmatureRoot, key))
+                        seeds.Add(new KeyValuePair<Transform, Transform>(key, GetRowTarget(r, preferMA)));
+                }
+                ctx.transformMap = BuildTransformMap(sourceAll, targetAll, seeds, ctx.scores);
 
-                var (dstCol, colCreated) = MapOrAddComponent<VRCPhysBoneCollider>(srcCol, dstHolder);
-                if (!colCreated) Undo.RecordObject(dstCol, "Paste VRCPhysBoneCollider");
-                EditorUtility.CopySerialized(srcCol, dstCol);
+                var slotCounter = new Dictionary<(Transform, Type), int>();
+                var remapTargets = new List<Component>();
+                var forcedRoots = new List<KeyValuePair<Component, Transform>>();
+                var maUpdates = new List<KeyValuePair<Transform, Transform>>();
+                var siblingDone = new HashSet<(Transform, Transform)>();
+                Transform lastHolder = null;
 
-                if (!transformMap.ContainsKey(r.sourceTransform))
-                    transformMap[r.sourceTransform] = dstHolder;
-                colliderMap[srcCol] = dstCol;
-                remapTargets.Add(new SerializedObject(dstCol));
+                // Collider → PhysBone の順
+                foreach (var kind in new[] { MappingRow.Kind.Collider, MappingRow.Kind.PhysBone })
+                {
+                    foreach (var r in applied.Where(x => x.kind == kind))
+                    {
+                        bool isPB = kind == MappingRow.Kind.PhysBone;
+                        var target = GetRowTarget(r, preferMA);
+                        bool anchor = UseAnchor(r, preferMA);
 
-                if (r.isMAExternal && r.maRootTarget)
-                    PBMapperHooks.UpdateMABoneProxyRootLocal?.Invoke(dstHolder, r.maRootTarget);
+                        Transform dstHolder = anchor
+                            ? PrepareDestinationHolderWithAnchor(r.sourceTransform, r.maRootTarget, isPB,
+                                sourceArmatureRoot, cloneExternalPBGameObject, srcRoot, ctx.transformMap)
+                            : PrepareDestinationHolder(r.sourceTransform, target, isPB,
+                                sourceArmatureRoot, cloneExternalPBGameObject, srcRoot, dstRoot, ctx.transformMap);
+                        if (!dstHolder) continue;
 
-                if (enableHighlight) PBMapperHooks.Highlight?.Invoke(dstHolder.gameObject, false);
-                EditorGUIUtility.PingObject(dstHolder);
+                        bool holderExternal = !TransformUtilities.IsUnderRoot(sourceArmatureRoot, r.sourceTransform);
+
+                        if (isPB && holderExternal && cloneExternalPBGameObject)
+                        {
+                            var effRoot = GetKeyBone(r);
+                            if (!TransformUtilities.IsUnderRoot(sourceArmatureRoot, effRoot) && TransformUtilities.IsUnderRoot(srcRoot, effRoot))
+                            {
+                                var chainDst = anchor ? r.maRootTarget : dstRoot;
+                                var clonedRoot = CloneExternalChainUnderTargetRoot(effRoot, srcRoot, chainDst, sourceArmatureRoot, ctx.transformMap);
+                                CloneSubtree(effRoot, clonedRoot, sourceArmatureRoot, ctx.transformMap);
+                            }
+                        }
+
+                        Component dstComp = isPB
+                            ? (Component)CopyComponentTo((VRCPhysBone)r.sourceComponent, dstHolder, slotCounter)
+                            : CopyComponentTo((VRCPhysBoneCollider)r.sourceComponent, dstHolder, slotCounter);
+                        if (!dstComp) continue;
+
+                        if (isPB) pbCount++; else colCount++;
+                        ctx.componentMap[r.sourceComponent] = dstComp;
+                        remapTargets.Add(dstComp);
+
+                        if (!ctx.transformMap.ContainsKey(r.sourceTransform))
+                            ctx.transformMap[r.sourceTransform] = dstHolder;
+
+                        var srcCompRoot = GetComponentRoot(r.sourceComponent);
+                        if (!anchor && srcCompRoot && TransformUtilities.IsUnderRoot(sourceArmatureRoot, srcCompRoot))
+                            forcedRoots.Add(new KeyValuePair<Component, Transform>(dstComp, target));
+
+                        if (isPB && copyOtherComponents && siblingDone.Add((r.sourceTransform, dstHolder)))
+                        {
+                            foreach (var pair in CopySiblingComponents(r.sourceTransform, dstHolder))
+                            {
+                                ctx.componentMap[pair.Key] = pair.Value;
+                                remapTargets.Add(pair.Value);
+                                otherCount++;
+                            }
+                        }
+
+                        if (r.isMAExternal && r.maRootTarget)
+                            maUpdates.Add(new KeyValuePair<Transform, Transform>(dstHolder, r.maRootTarget));
+
+                        if (enableHighlight) PBMapperHooks.Highlight?.Invoke(dstHolder.gameObject, isPB);
+                        lastHolder = dstHolder;
+                    }
+                }
+
+                // 一括リマップ
+                foreach (var c in remapTargets)
+                    RemapAllObjectReferences(c, ctx);
+
+                foreach (var kv in forcedRoots)
+                    SetObjectReference(kv.Key, "rootTransform", kv.Value);
+
+                // MA の target はリマップ後に設定
+                foreach (var kv in maUpdates)
+                    PBMapperHooks.UpdateMABoneProxyRootLocal?.Invoke(kv.Key, kv.Value);
+
+                if (lastHolder) EditorGUIUtility.PingObject(lastHolder);
+            }
+            finally
+            {
+                Undo.CollapseUndoOperations(undoGroup);
             }
 
-            // 2) PhysBones
-            foreach (var r in rows.Where(x => x.apply && x.kind == MappingRow.Kind.PhysBone && x.suggestedTarget))
-            {
-                var srcPb = r.sourceComponent as VRCPhysBone; if (!srcPb) continue;
+            if (ctx.lowConfidence.Count > 0)
+                Debug.LogWarning("[PhysBoneMapper] 名前の一致度が低い繋ぎ替え（確認してください）:\n" + string.Join("\n", ctx.lowConfidence));
+            if (ctx.unresolved.Count > 0)
+                Debug.LogWarning("[PhysBoneMapper] ターゲット側に対応が見つからず None にした参照:\n" + string.Join("\n", ctx.unresolved));
 
-                Transform dstHolder = (preferMABoneProxyRootForExternal && r.isMAExternal && r.maRootTarget)
-                    ? PrepareDestinationHolderWithAnchor(r.sourceTransform, r.maRootTarget, true,
-                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, transformMap)
-                    : PrepareDestinationHolder(r.sourceTransform, r.suggestedTarget, true,
-                        sourceArmatureRoot, cloneExternalPBGameObject, sourcePrefabRoot.transform, targetPrefabRoot.transform, transformMap);
+            var msg = new StringBuilder();
+            msg.AppendLine("Paste Completed");
+            msg.AppendLine($"PhysBone: {pbCount} / Collider: {colCount}" + (copyOtherComponents ? $" / その他: {otherCount}" : ""));
+            if (ctx.lowConfidence.Count > 0 || ctx.unresolved.Count > 0)
+                msg.AppendLine($"要確認の参照: 低一致 {ctx.lowConfidence.Count} 件 / 未解決 {ctx.unresolved.Count} 件（Console 参照）");
+            EditorUtility.DisplayDialog("PhysBone Mapper", msg.ToString(), "OK");
+        }
 
-                var (dstPb, pbCreated) = MapOrAddComponent<VRCPhysBone>(srcPb, dstHolder);
-                if (!pbCreated) Undo.RecordObject(dstPb, "Paste VRCPhysBone");
-                EditorUtility.CopySerialized(srcPb, dstPb);
+        static T CopyComponentTo<T>(T src, Transform dstHolder, Dictionary<(Transform, Type), int> slotCounter) where T : Component
+        {
+            if (!src || !dstHolder) return null;
+            var (dst, created) = MapOrAddComponent(src, dstHolder, slotCounter);
+            if (!dst) return null;
+            if (!created) Undo.RecordObject(dst, $"Paste {typeof(T).Name}");
+            EditorUtility.CopySerialized(src, dst);
+            PrefabUtility.RecordPrefabInstancePropertyModifications(dst);
+            return dst;
+        }
 
-                if (!transformMap.ContainsKey(r.sourceTransform))
-                    transformMap[r.sourceTransform] = dstHolder;
-                remapTargets.Add(new SerializedObject(dstPb));
-
-                if (copyOtherComponents)
-                    CopySiblingComponents(r.sourceTransform, dstHolder);
-
-                if (r.isMAExternal && r.maRootTarget)
-                    PBMapperHooks.UpdateMABoneProxyRootLocal?.Invoke(dstHolder, r.maRootTarget);
-
-                if (enableHighlight) PBMapperHooks.Highlight?.Invoke(dstHolder.gameObject, true);
-                EditorGUIUtility.PingObject(dstHolder);
-            }
-
-            // 3) 一括リマップ
-            foreach (var so in remapTargets)
-            {
-                RemapAllObjectReferences(so, colliderMap, transformMap, sourcePrefabRoot.transform);
-            }
-
-            EditorUtility.DisplayDialog("PhysBone Mapper", "Paste Completed", "OK");
+        static void SetObjectReference(Component c, string propertyName, Object value)
+        {
+            if (!c) return;
+            var so = new SerializedObject(c);
+            var sp = so.FindProperty(propertyName);
+            if (sp == null || sp.propertyType != SerializedPropertyType.ObjectReference) return;
+            if (sp.objectReferenceValue == value) return;
+            sp.objectReferenceValue = value;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         // ===== 参照リマップ =====
 
         public static Dictionary<Transform, Transform> BuildTransformMap(List<Transform> src, List<Transform> dst)
+            => BuildTransformMap(src, dst, null, null);
+
+        public static void RemapAllObjectReferences(Component target, RemapContext ctx)
         {
-            var map = new Dictionary<Transform, Transform>();
-            foreach (var s in src)
+            if (!target || ctx == null) return;
+            var so = new SerializedObject(target);
+            var it = so.GetIterator();
+            var toRemove = new List<KeyValuePair<string, int>>();
+            bool changed = false;
+            bool compactArrays = target is VRCPhysBone || target is VRCPhysBoneCollider;
+
+            while (it.NextVisible(true))
             {
-                if (s == null) continue;
-                if (string.IsNullOrEmpty(FuzzyMatcher.NormalizeKey(s.name))) continue;
-                Transform best = null; float bestScore = float.NegativeInfinity;
-                foreach (var t in dst)
+                if (it.propertyType != SerializedPropertyType.ObjectReference) continue;
+                if (it.name == "m_Script") continue;
+                var obj = it.objectReferenceValue;
+                if (!obj) continue;
+                if (!TryResolve(obj, ctx, out var resolved)) continue;
+                if (resolved == obj) continue;
+
+                it.objectReferenceValue = resolved;
+                changed = true;
+
+                if (!resolved)
                 {
-                    if (t == null) continue;
-                    float score = FuzzyMatcher.MatchScore(s.name, t.name);
-                    if (score > bestScore) 
-                    { 
-                        bestScore = score; best = t; 
-                    }
-                    else if (score == bestScore && bestScore > 0f)
-                    {
-                        bool curAncestryMatch = (s.parent && t.parent && map.TryGetValue(s.parent, out var mappedParent) && mappedParent == t.parent);
-                        bool bestAncestryMatch = (s.parent && best.parent && map.TryGetValue(s.parent, out var mappedParentBest) && mappedParentBest == best.parent);
-                        if (curAncestryMatch && !bestAncestryMatch)
-                        {
-                            best = t;
-                        }
-                    }
+                    ctx.unresolved.Add($"{target.transform.GetHierarchyPath()} [{target.GetType().Name}] {it.propertyPath} : {Describe(obj)}");
+                    if (compactArrays && TryParseArrayElement(it.propertyPath, out var arrayPath, out var index))
+                        toRemove.Add(new KeyValuePair<string, int>(arrayPath, index));
                 }
-                if (best && bestScore >= 0.6f) map[s] = best;
             }
-            return map;
+
+            foreach (var e in toRemove.OrderByDescending(x => x.Value))
+            {
+                var arr = so.FindProperty(e.Key);
+                if (arr == null || !arr.isArray || e.Value >= arr.arraySize) continue;
+                var el = arr.GetArrayElementAtIndex(e.Value);
+                if (el.propertyType == SerializedPropertyType.ObjectReference && el.objectReferenceValue == null)
+                    arr.DeleteArrayElementAtIndex(e.Value);
+            }
+
+            if (changed) so.ApplyModifiedPropertiesWithoutUndo();
         }
-
-
 
         public static void RemapAllObjectReferences(SerializedObject so,
             Dictionary<VRCPhysBoneCollider, VRCPhysBoneCollider> cmap,
@@ -312,45 +469,81 @@ namespace PBMapper
             Transform sourcePrefabRoot)
         {
             if (so == null) return;
-            Debug.Assert(sourcePrefabRoot != null, "[PhysBoneMapper] sourcePrefabRoot is null in RemapAllObjectReferences");
-            var it = so.GetIterator();
-            while (it.NextVisible(true))
+            var ctx = new RemapContext { transformMap = transformMap ?? new Dictionary<Transform, Transform>(), sourceRoot = sourcePrefabRoot };
+            if (cmap != null) foreach (var kv in cmap) ctx.componentMap[kv.Key] = kv.Value;
+            foreach (var o in so.targetObjects)
+                if (o is Component c) RemapAllObjectReferences(c, ctx);
+            so.Update();
+        }
+
+        static bool TryResolve(Object obj, RemapContext ctx, out Object resolved)
+        {
+            resolved = obj;
+            var srcRoot = ctx.sourceRoot;
+            switch (obj)
             {
-                if (it.propertyType == SerializedPropertyType.ObjectReference)
-                {
-                    var obj = it.objectReferenceValue;
-                    switch (obj)
+                case Transform tr:
                     {
-                        case Transform tr:
-                            {
-                                if (tr && transformMap.TryGetValue(tr, out var dst))
-                                    it.objectReferenceValue = dst;
-                                else if (tr && TransformUtilities.IsUnderRoot(sourcePrefabRoot, tr))
-                                    it.objectReferenceValue = null;
-                                break;
-                            }
-                        case VRCPhysBoneCollider col:
-                            {
-                                if (col && cmap.TryGetValue(col, out var mapped))
-                                    it.objectReferenceValue = mapped;
-                                else if (col && col.transform && transformMap.TryGetValue(col.transform, out var tf))
-                                {
-                                    var dstCands = tf.GetComponents<VRCPhysBoneCollider>();
-                                    if (dstCands.Length > 0)
-                                    {
-                                        var srcCands = col.transform.GetComponents<VRCPhysBoneCollider>();
-                                        int index = Array.IndexOf(srcCands, col);
-                                        it.objectReferenceValue = (index >= 0 && index < dstCands.Length) ? dstCands[index] : dstCands[0];
-                                    }
-                                }
-                                else if (col && col.transform && TransformUtilities.IsUnderRoot(sourcePrefabRoot, col.transform))
-                                    it.objectReferenceValue = null;
-                                break;
-                            }
+                        if (ctx.transformMap.TryGetValue(tr, out var dst) && dst)
+                        { ctx.NoteMapped(tr, dst); resolved = dst; return true; }
+                        if (TransformUtilities.IsUnderRoot(srcRoot, tr)) { resolved = null; return true; }
+                        return false;
                     }
-                }
+                case GameObject go:
+                    {
+                        var tr = go.transform;
+                        if (ctx.transformMap.TryGetValue(tr, out var dst) && dst)
+                        { ctx.NoteMapped(tr, dst); resolved = dst.gameObject; return true; }
+                        if (TransformUtilities.IsUnderRoot(srcRoot, tr)) { resolved = null; return true; }
+                        return false;
+                    }
+                case Component c:
+                    {
+                        if (ctx.componentMap.TryGetValue(c, out var mapped) && mapped)
+                        { resolved = mapped; return true; }
+                        var tr = c.transform;
+                        if (!TransformUtilities.IsUnderRoot(srcRoot, tr)) return false;
+
+                        resolved = null;
+                        if (ctx.transformMap.TryGetValue(tr, out var dstT) && dstT)
+                        {
+                            var type = c.GetType();
+                            var srcCands = tr.GetComponents(type).Where(x => x.GetType() == type).ToArray();
+                            var dstCands = dstT.GetComponents(type).Where(x => x.GetType() == type).ToArray();
+                            int index = Array.IndexOf(srcCands, c);
+                            if (index >= 0 && index < dstCands.Length) resolved = dstCands[index];
+                            else if (c is VRCPhysBoneCollider && dstCands.Length > 0) resolved = dstCands[0];
+                            if (resolved) ctx.NoteMapped(tr, dstT);
+                        }
+                        return true;
+                    }
+                default:
+                    return false;
             }
-            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        static string Describe(Object obj)
+        {
+            switch (obj)
+            {
+                case Transform t: return t.GetHierarchyPath();
+                case GameObject g: return g.transform.GetHierarchyPath();
+                case Component c: return $"{c.transform.GetHierarchyPath()} ({c.GetType().Name})";
+                default: return obj ? obj.name : "(null)";
+            }
+        }
+
+        static bool TryParseArrayElement(string propertyPath, out string arrayPath, out int index)
+        {
+            arrayPath = null; index = -1;
+            const string marker = ".Array.data[";
+            if (string.IsNullOrEmpty(propertyPath) || !propertyPath.EndsWith("]")) return false;
+            int p = propertyPath.LastIndexOf(marker, StringComparison.Ordinal);
+            if (p < 0) return false;
+            int start = p + marker.Length;
+            if (!int.TryParse(propertyPath.Substring(start, propertyPath.Length - start - 1), out index)) return false;
+            arrayPath = propertyPath.Substring(0, p);
+            return true;
         }
 
         // ===== 外部PB対応 =====
@@ -365,12 +558,10 @@ namespace PBMapper
             if (srcUnderArmature) return suggestedDstBone;
             if (cloneExternalPBGameObject)
                 return CloneExternalChainUnderTargetRoot(srcHolder, sourcePrefabRoot, targetPrefabRoot, sourceArmatureRoot, transformMap);
-            var container = new GameObject(srcHolder.name);
-            container.transform.SetParent(suggestedDstBone, false);
-            TransformUtilities.CopyLocalTRS(srcHolder, container.transform);
-            Undo.RegisterCreatedObjectUndo(container.gameObject, "Create PB Container");
-            transformMap[srcHolder] = container.transform;
-            return container.transform;
+            if (!suggestedDstBone) return null;
+            var container = GetOrCreateChild(suggestedDstBone, srcHolder, "Create PB Container");
+            transformMap[srcHolder] = container;
+            return container;
         }
 
         public static Transform PrepareDestinationHolderWithAnchor(
@@ -379,15 +570,24 @@ namespace PBMapper
             Transform sourcePrefabRoot,
             Dictionary<Transform, Transform> transformMap)
         {
+            if (!targetAnchor) return null;
             if (TransformUtilities.IsUnderRoot(sourceArmatureRoot, srcHolder)) return targetAnchor;
             if (cloneExternalPBGameObject)
                 return CloneExternalChainUnderTargetRoot(srcHolder, sourcePrefabRoot, targetAnchor, sourceArmatureRoot, transformMap);
-            var container = new GameObject(srcHolder.name);
-            container.transform.SetParent(targetAnchor, false);
-            TransformUtilities.CopyLocalTRS(srcHolder, container.transform);
-            Undo.RegisterCreatedObjectUndo(container.gameObject, "Create PB Container (Anchor)");
-            transformMap[srcHolder] = container.transform;
-            return container.transform;
+            var container = GetOrCreateChild(targetAnchor, srcHolder, "Create PB Container (Anchor)");
+            transformMap[srcHolder] = container;
+            return container;
+        }
+
+        static Transform GetOrCreateChild(Transform parent, Transform src, string undoName)
+        {
+            var existing = TransformUtilities.FindChildByName(parent, src.name);
+            if (existing) return existing;
+            var go = new GameObject(src.name);
+            go.transform.SetParent(parent, false);
+            TransformUtilities.CopyLocalTRS(src, go.transform);
+            Undo.RegisterCreatedObjectUndo(go, undoName);
+            return go.transform;
         }
 
         public static Transform CloneExternalChainUnderTargetRoot(
@@ -407,15 +607,7 @@ namespace PBMapper
             while (stack.Count > 0)
             {
                 var s = stack.Pop();
-                var existing = TransformUtilities.FindChildByName(parent, s.name);
-                if (existing == null)
-                {
-                    var go = new GameObject(s.name);
-                    go.transform.SetParent(parent, false);
-                    TransformUtilities.CopyLocalTRS(s, go.transform);
-                    Undo.RegisterCreatedObjectUndo(go, "Clone External PB Chain");
-                    existing = go.transform;
-                }
+                var existing = GetOrCreateChild(parent, s, "Clone External PB Chain");
                 transformMap[s] = existing;
                 parent = existing;
                 last = existing;
@@ -423,45 +615,83 @@ namespace PBMapper
             return last != null ? last : dstRoot;
         }
 
-        public static void CopySiblingComponents(Transform src, Transform dst)
+        public static void CloneSubtree(Transform src, Transform dst, Transform sourceArmatureRoot, Dictionary<Transform, Transform> transformMap)
         {
             if (!src || !dst) return;
-            foreach (var comp in src.GetComponents<Component>())
+            for (int i = 0; i < src.childCount; i++)
             {
-                if (comp == null) continue; var tp = comp.GetType();
-                if (tp == typeof(Transform)) continue;
-                if (tp == typeof(VRCPhysBone) || tp == typeof(VRCPhysBoneCollider)) continue;
-                if (dst.GetComponent(tp)) continue;
-                Component newC = null;
-                try { newC = dst.gameObject.AddComponent(tp); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); EditorUtility.CopySerialized(comp, newC); }
-                catch (Exception e) { if (newC != null) Undo.DestroyObjectImmediate(newC); Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}"); }
+                var c = src.GetChild(i);
+                if (TransformUtilities.IsUnderRoot(sourceArmatureRoot, c)) continue;
+                var d = GetOrCreateChild(dst, c, "Clone External PB Bones");
+                transformMap[c] = d;
+                CloneSubtree(c, d, sourceArmatureRoot, transformMap);
             }
         }
 
-        public static void CopyAllComponents(Transform src, Transform dst)
+        public static List<KeyValuePair<Component, Component>> CopySiblingComponents(Transform src, Transform dst)
         {
-            if (!src || !dst) return;
+            var result = new List<KeyValuePair<Component, Component>>();
+            if (!src || !dst || src == dst) return result;
+
+            var srcIndexByType = new Dictionary<Type, int>();
+            var dstCountByType = new Dictionary<Type, int>();
+
             foreach (var comp in src.GetComponents<Component>())
             {
                 if (comp == null) continue;
                 var tp = comp.GetType();
-                if (tp == typeof(Transform)) continue;
-                if (dst.GetComponent(tp) != null) continue;
+                if (comp is Transform) continue;
+                if (comp is VRCPhysBone || comp is VRCPhysBoneCollider) continue;
+
+                srcIndexByType.TryGetValue(tp, out int idx);
+                srcIndexByType[tp] = idx + 1;
+                if (!dstCountByType.TryGetValue(tp, out int existing))
+                {
+                    existing = dst.GetComponents(tp).Count(x => x && x.GetType() == tp);
+                    dstCountByType[tp] = existing;
+                }
+                if (idx < existing) continue;
+
                 Component newC = null;
-                try { newC = dst.gameObject.AddComponent(tp); Undo.RegisterCreatedObjectUndo(newC, $"Copy {tp.Name}"); EditorUtility.CopySerialized(comp, newC); }
-                catch (Exception e) { if (newC != null) Undo.DestroyObjectImmediate(newC); Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}"); }
+                try
+                {
+                    newC = Undo.AddComponent(dst.gameObject, tp);
+                    if (!newC) continue;
+                    EditorUtility.CopySerialized(comp, newC);
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(newC);
+                    result.Add(new KeyValuePair<Component, Component>(comp, newC));
+                }
+                catch (Exception e)
+                {
+                    if (newC) Undo.DestroyObjectImmediate(newC);
+                    Debug.LogWarning($"[PhysBoneMapper] コンポーネント {tp.Name} のコピーに失敗: {e.Message}");
+                }
             }
+            return result;
         }
 
-        public static (T component, bool created) MapOrAddComponent<T>(T srcComp, Transform dstHolder) where T : Component
+        public static (T component, bool created) MapOrAddComponent<T>(
+            T srcComp, Transform dstHolder,
+            Dictionary<(Transform, Type), int> slotCounter = null) where T : Component
         {
             if (srcComp == null) throw new ArgumentNullException(nameof(srcComp));
-            var srcAll = srcComp.gameObject.GetComponents<T>();
-            int index = Array.IndexOf(srcAll, srcComp);
+            if (dstHolder == null) throw new ArgumentNullException(nameof(dstHolder));
+
+            int index;
+            if (slotCounter != null)
+            {
+                var key = (dstHolder, typeof(T));
+                slotCounter.TryGetValue(key, out index);
+                slotCounter[key] = index + 1;
+            }
+            else
+            {
+                index = Array.IndexOf(srcComp.gameObject.GetComponents<T>(), srcComp);
+            }
+
             var dstAll = dstHolder.gameObject.GetComponents<T>();
             if (index >= 0 && index < dstAll.Length) return (dstAll[index], false);
-            var newComp = dstHolder.gameObject.AddComponent<T>();
-            Undo.RegisterCreatedObjectUndo(newComp, $"Add {typeof(T).Name}");
+            var newComp = Undo.AddComponent<T>(dstHolder.gameObject);
             return (newComp, true);
         }
     }

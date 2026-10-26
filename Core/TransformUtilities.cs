@@ -16,6 +16,7 @@ namespace PBMapper
 
         public static Transform FindChildByName(Transform parent, string name)
         {
+            if (!parent) return null;
             for (int i = 0; i < parent.childCount; i++)
             {
                 var c = parent.GetChild(i);
@@ -40,12 +41,26 @@ namespace PBMapper
             return list;
         }
 
+        // Humanoid なら Hips の親、それ以外は名前に "armature" を含む最も浅い Transform
         public static Transform AutoDetectArmature(Transform root)
         {
             if (!root) return null;
-            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+
+            var animator = root.GetComponent<Animator>();
+            if (animator && animator.isHuman && animator.avatar)
             {
+                var hips = animator.GetBoneTransform(HumanBodyBones.Hips);
+                if (hips && IsUnderRoot(root, hips))
+                    return (hips.parent && hips.parent != root) ? hips.parent : hips;
+            }
+
+            var queue = new Queue<Transform>();
+            queue.Enqueue(root);
+            while (queue.Count > 0)
+            {
+                var t = queue.Dequeue();
                 if (t.name.IndexOf("armature", StringComparison.OrdinalIgnoreCase) >= 0) return t;
+                for (int i = 0; i < t.childCount; i++) queue.Enqueue(t.GetChild(i));
             }
             return root;
         }
