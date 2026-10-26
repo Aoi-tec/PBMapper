@@ -8,7 +8,7 @@ namespace PBMapper
 {
     public class PhysBoneMapperWindow : EditorWindow
     {
-        [MenuItem("Tools/aoistool/PhysBone Mapper")]
+        [MenuItem("Tools/Aoisan/PhysBone Mapper")]
         public static void Open() => GetWindow<PhysBoneMapperWindow>("PhysBone Mapper");
 
         // === 入力 ===
@@ -131,16 +131,20 @@ namespace PBMapper
 
                     var rect = GUILayoutUtility.GetRect(halfFlex, EditorGUIUtility.singleLineHeight);
                     Transform current = r.isMAExternal ? r.maRootTarget : r.suggestedTarget;
-                    Transform acceptRoot = targetArmatureRoot ? targetArmatureRoot : (targetPrefabRoot ? targetPrefabRoot.transform : null);
+                    Transform acceptRoot = targetPrefabRoot ? targetPrefabRoot.transform : targetArmatureRoot;
 
+                    EditorGUI.BeginChangeCheck();
                     Transform newTarget = (Transform)EditorGUI.ObjectField(rect, current, typeof(Transform), true);
-                    if (newTarget != null && !TransformUtilities.IsUnderRoot(acceptRoot, newTarget))
-                        newTarget = null;
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        if (newTarget != null && !TransformUtilities.IsUnderRoot(acceptRoot, newTarget))
+                            newTarget = current;
 
-                    if (r.isMAExternal)
-                        r.maRootTarget = newTarget;
-                    else
-                        r.suggestedTarget = newTarget;
+                        if (r.isMAExternal)
+                            r.maRootTarget = newTarget;
+                        else
+                            r.suggestedTarget = newTarget;
+                    }
 
                     // D&D 対応
                     if (rect.Contains(Event.current.mousePosition) && Event.current.type == EventType.DragUpdated)
